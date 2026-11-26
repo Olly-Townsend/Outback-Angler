@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Outback Angler</title>
+<style>
+:root{--fg:#eef7fb;--card:rgba(10,25,33,.88);--acc:#ffd24a}
+@media (prefers-color-scheme:light){:root{--fg:#10242d;--card:rgba(255,255,255,.92)}}
+html,body{margin:0;height:100%;background:#000;overflow:hidden;font-family:system-ui,sans-serif;color:var(--fg)}
+canvas{position:fixed;inset:0;width:100%;height:100%;display:block}
+#hud{position:fixed;inset:0;pointer-events:none;padding:env(safe-area-inset-top,0) 0 env(safe-area-inset-bottom,0)}
+#top{position:absolute;left:12px;top:12px;background:var(--card);padding:8px 12px;border-radius:10px;font-size:13px;line-height:1.5}
+#msg{position:absolute;top:18%;width:100%;text-align:center;font:700 24px system-ui;color:#fff;text-shadow:0 2px 8px #000}
+#cross{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);color:#fff;opacity:.7;font-size:20px}
+#hint{position:absolute;bottom:14px;width:100%;text-align:center;font-size:14px;color:#fff;text-shadow:0 1px 5px #000}
+#bars{position:absolute;bottom:54px;left:50%;transform:translateX(-50%);width:min(360px,80%);display:none}
+.bar{height:14px;background:rgba(0,0,0,.55);border-radius:8px;margin:4px 0;overflow:hidden}
+.bar i{display:block;height:100%;width:0}
+#log{position:absolute;right:12px;top:12px;background:var(--card);padding:8px 12px;border-radius:10px;font-size:12px;max-width:230px}
+.ov{position:fixed;inset:0;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;padding:16px;overflow:auto}
+.ov[hidden]{display:none}
+.pn{background:var(--card);border-radius:16px;padding:20px;max-width:560px;width:100%;box-sizing:border-box}
+.pn h2{margin:0 0 6px}.pn p{font-size:13px;opacity:.85;margin:6px 0}
+button{font:inherit;cursor:pointer;border:0;border-radius:10px;padding:10px 12px;margin:4px 0;width:100%;text-align:left;background:#1f6f8b;color:#fff}
+button:hover{background:#2a8fb3}
+</style></head><body>
+<canvas id="gl"></canvas>
+<div id="hud"><div id="top"></div><div id="log"><b>Catch log</b><div id="lg">Nothing yet</div></div><div id="msg"></div><div id="cross">+</div>
+<div id="bars"><div class="bar"><i id="tn"></i></div><div class="bar"><i id="sm" style="background:#6cf"></i></div></div><div id="hint"></div></div>
+<div id="menu" class="ov"><div class="pn"><h2>🎣 Outback Angler</h2>
+<p>Pick a spot. Fish bite at different times of day, so watch the clock. Dawn and dusk usually fire. Some spells are dead quiet.</p>
+<div id="maps"></div><p id="mnote"></p><button onclick="openRod()">🎛 Rod Customiser</button> <button onclick="save(1)">💾 Save game (auto-saves every 15s)</button><button onclick="nosave=1;try{localStorage.removeItem(SK)}catch(e){}location.reload()">🗑 Delete save and restart</button>
+<p><b>Controls:</b> mouse look · WASD walk (Shift run) · hold LMB to charge, release to cast · hold LMB to retrieve/reel · 1-4 lures/bait, 5-6 pro lures you find · E edit rod / re-rig · F talk to Shazza · M travel · K keep / R release · B boat · Space strike on a bite / jerk a snag free · T skip 3h · Esc pause</p></div></div>
+<div id="rod" class="ov" hidden><div class="pn"><h2>🎛 Rod Customiser</h2><div id="rodb"></div><button onclick="closeRod()">Close (C)</button></div></div><div id="shop" class="ov" hidden><div class="pn"><h2>Shazza’s Tackle &amp; Bait</h2><p id="shm"></p><div id="shi"></div><button onclick="closeShop()">Close (E)</button></div></div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+const $=id=>document.getElementById(id),T=THREE,rnd=Math.random;
+// p = bite weight [dawn, day, dusk, night]; s = size class (lure match)
+const FISH={
+cod:{n:'Murray Cod',w:[2,30],s:3,st:1.5,p:[.3,.3,.8,1],$:14},
+gp:{n:'Golden Perch',w:[.5,4],s:2,st:.8,p:[.5,1,.6,.3],$:12},
+red:{n:'Redfin',w:[.3,2],s:1,st:.6,p:[.6,.8,.9,.2],$:8},
+carp:{n:'Common Carp',w:[1,8],s:2,st:.9,p:[.3,1,.4,.2],$:2},
+rbt:{n:'Rainbow Trout',w:[.5,3],s:1,st:.8,p:[1,.4,1,.2],$:15},
+brt:{n:'Brown Trout',w:[.8,5],s:2,st:1,p:[1,.3,1,.5],$:18},
+barra:{n:'Barramundi',w:[3,20],s:3,st:1.3,p:[.5,.3,1,1],$:25},
+sar:{n:'Saratoga',w:[1,5],s:2,st:1,p:[.4,1,.5,.7],$:16},
+bream:{n:'Yellowfin Bream',w:[.4,2],s:1,st:.7,p:[.6,1,.7,.4],$:10},
+flat:{n:'Dusky Flathead',w:[.8,6],s:2,st:1,p:[.5,1,.6,.3],$:16},
+mull:{n:'Mulloway',w:[5,30],s:3,st:1.5,p:[.3,.1,.7,1],$:20},
+whit:{n:'Sand Whiting',w:[.3,1],s:1,st:.4,p:[.5,1,.6,0],$:9},
+tail:{n:'Tailor',w:[.5,4],s:2,st:.9,p:[1,.4,1,.5],$:11},
+sal:{n:'Australian Salmon',w:[1,5],s:2,st:1.1,p:[1,.5,1,.3],$:9},
+king:{n:'Yellowtail Kingfish',w:[3,20],s:3,st:1.5,p:[.5,1,.5,.1],$:22},tcod:{n:'Trout Cod',w:[1,12],s:3,st:1.3,p:[.3,.3,.6,.7],$:0},groper:{n:'Eastern Blue Groper',w:[3,20],s:3,st:1.3,p:[.3,.8,.5,.1],$:0},whaler:{n:'Bronze Whaler Shark',w:[15,120],s:3,st:1.9,p:[.5,.4,.8,1],$:6},gnurse:{n:'Grey Nurse Shark',w:[30,150],s:3,st:1.7,p:[.2,.2,.4,.6],$:0}};
+const MAPS=[
+{n:'Murray River, Echuca VIC',d:'Freshwater river. Murray cod, golden perch, redfin, carp. Snaggy as.',k:'river',fish:['cod','gp','red','carp','tcod'],c1:0x9a8b5a,c2:0x6e8f3c,c3:0x5a4a32,w:0x4d7a5a,tc:0x6f8a58,trees:140},
+{n:'Lake Eucumbene, NSW',d:'Freshwater lake in the Snowies. Rainbow and brown trout, redfin.',k:'lake',fish:['rbt','brt','red'],c1:0x8a8466,c2:0x7a9a58,c3:0x4a4a40,w:0x2f6f90,tc:0x587848,trees:90},
+{n:'Lake Tinaroo, Tablelands QLD',d:'Freshwater lake. Barramundi, saratoga, golden perch. Fires at dusk.',k:'lake',fish:['barra','sar','gp'],c1:0x9a7a50,c2:0x3f8a3a,c3:0x4a3a2a,w:0x3a7a6a,tc:0x2f7a35,trees:200},
+{n:'Hawkesbury River Estuary, NSW',d:'Brackish estuary. Bream, flathead, mulloway, whiting.',k:'est',fish:['bream','flat','mull','whit'],c1:0x8a7a58,c2:0x4a7a45,c3:0x4a4030,w:0x3d6a60,tc:0x3a6a40,trees:170},
+{n:'Botany Bay, Sydney NSW',d:'Saltwater bay. Bream, flathead, tailor, kingfish, whiting.',k:'bay',fish:['bream','flat','tail','king','whit','groper'],c1:0xe0cf9a,c2:0x7a9a50,c3:0xb8a878,w:0x2a86b0,tc:0x5a8a48,trees:40},
+{n:'Stockton Beach, NSW',d:'Surf beach. Australian salmon, tailor, whiting, mulloway.',k:'beach',fish:['sal','tail','whit','mull','whaler','gnurse'],c1:0xeedaa4,c2:0xd8c58c,c3:0xc2b080,w:0x1f8fb8,tc:0x6a8a50,trees:0}];
+MAPS.push({n:'Turon River, Sofala NSW',d:'Freshwater river. Carp, redfin, golden perch, rainbow trout. Carp blitz every Tuesday!',k:'river',fish:['carp','red','gp','rbt'],c1:0x9a8b5a,c2:0x7a8f48,c3:0x5a4a32,w:0x5a7a5a,tc:0x6f8a58,trees:130},{n:'Lake Argyle, Kimberley WA',d:'Huge red-rock freshwater lake. Big barramundi and saratoga.',k:'lake',fish:['barra','sar'],c1:0xb8703a,c2:0x9a6a3a,c3:0x6a4a2a,w:0x3a8aa0,tc:0x6a8a40,trees:60},{n:'K’gari Beach, QLD',d:'Remote surf beach. Sharks everywhere. Fish thin out at night.',k:'beach',fish:['sal','tail','whit','king','whaler','gnurse'],c1:0xf0dca0,c2:0xdcc890,c3:0xc2b080,w:0x1a8fc0,tc:0x6a8a50,trees:0});[0,0,800,1200,2000,3000,250,5000,8000].forEach((u,i)=>MAPS[i].u=u);MAPS[6].nb=1;MAPS[0].rw=40;MAPS[6].rw=8;MAPS[3].rw=48;MAPS[0].sp=[0,-110];MAPS[3].sp=[0,-120];MAPS[6].sp=[0,-22];
+const LURES=[{n:'Soft plastic',s:1,c:0,$:25},{n:'Crankbait',s:2,c:3,$:36},{n:'Swimbait',s:3,c:0,$:60},{n:'Live prawns',s:2,c:5,$:15,bait:1},{n:'Pro Poltergeist',s:3,c:0,$:0,pro:1},{n:'Pro Hand-painted Yabby',s:2,c:0,$:0,pro:1}];
+let money=200;
+</script>
+<script>
+const R=new T.WebGLRenderer({canvas:$('gl'),antialias:true});R.setPixelRatio(Math.min(devicePixelRatio,2));R.toneMapping=THREE.ACESFilmicToneMapping;R.toneMappingExposure=1.25;R.shadowMap.enabled=true;R.shadowMap.type=T.PCFSoftShadowMap;
+const scene=new T.Scene(),cam=new T.PerspectiveCamera(70,1,.1,600);cam.rotation.order='YXZ';scene.add(cam);
+const hemi=new T.HemisphereLight(0xffffff,0x445533,.7),sun=new T.DirectionalLight(0xfff2d0,1);scene.add(hemi,sun);
+scene.fog=new T.FogExp2(0x8fd0f5,.006);sun.castShadow=true;sun.shadow.mapSize.set(2048,2048);{const q=sun.shadow.camera;q.left=q.bottom=-55;q.right=q.top=55;q.near=1;q.far=400}sun.shadow.bias=-.0005;scene.add(sun.target);const camL=new T.PointLight(0xffffff,.5,6);cam.add(camL);
+const skyM=new T.Mesh(new T.SphereGeometry(450,24,16),new T.ShaderMaterial({side:T.BackSide,depthWrite:false,fog:false,uniforms:{top:{value:new T.Color()},hor:{value:new T.Color()}},vertexShader:'varying vec3 p;void main(){p=position;gl_Position=projectionMatrix*modelViewMatrix*vec4(position,1.);}',fragmentShader:'uniform vec3 top,hor;varying vec3 p;void main(){float h=clamp(normalize(p).y*1.5,0.,1.);gl_FragColor=vec4(mix(hor,top,pow(h,.55)),1.);}'}));skyM.renderOrder=-2;skyM.frustumCulled=false;skyM.layers.enable(1);scene.add(skyM);
+const disc=new T.Mesh(new T.SphereGeometry(14,16,12),new T.MeshBasicMaterial({color:0xfff6d8,fog:false}));disc.layers.enable(1);scene.add(disc);
+const stars=(()=>{const ar=[];for(let i=0;i<900;i++){const a=rnd()*6.283,u=rnd(),r=Math.sqrt(1-u*u);ar.push(Math.cos(a)*r*420,u*420,Math.sin(a)*r*420)}const g=new T.BufferGeometry();g.setAttribute('position',new T.Float32BufferAttribute(ar,3));const s=new T.Points(g,new T.PointsMaterial({size:2,sizeAttenuation:false,transparent:true,fog:false,depthWrite:false}));s.layers.enable(1);scene.add(s);return s})();
+const cloudM=new T.MeshBasicMaterial({color:0xffffff,transparent:true,opacity:.75,fog:false,depthWrite:false});for(let i=0;i<16;i++){const c=new T.Mesh(new T.SphereGeometry(1,10,6),cloudM);c.scale.set(40+rnd()*50,6+rnd()*4,22+rnd()*20);c.position.set((rnd()-.5)*700,130+rnd()*50,(rnd()-.5)*700);c.layers.enable(1);scene.add(c)}
+const spG=new T.SphereGeometry(.05,6,5),spM=new T.MeshBasicMaterial({color:0xeaf6ff}),sps=[];for(let i=0;i<30;i++){const m=new T.Mesh(spG,spM);m.visible=false;m.userData.v=new T.Vector3();scene.add(m);sps.push(m)}
+const ring=new T.Mesh(new T.RingGeometry(.3,.4,32),new T.MeshBasicMaterial({color:0xffffff,transparent:true,opacity:0,side:T.DoubleSide,depthWrite:false}));ring.rotation.x=-Math.PI/2;scene.add(ring);let rt=0,rsz=1;
+function splash(x,z,n,s){for(let i=0;i<n&&i<30;i++){const m=sps[i];m.position.set(x,0,z);m.userData.v.set((rnd()-.5)*2*s,2+rnd()*3*s,(rnd()-.5)*2*s);m.visible=true}ring.position.set(x,.05,z);rt=1;rsz=s}
+function updSplash(dt){sps.forEach(m=>{if(!m.visible)return;const v=m.userData.v;v.y-=12*dt;m.position.addScaledVector(v,dt);if(m.position.y<0)m.visible=false});if(rt>0){rt-=dt*1.2;ring.scale.setScalar(1+(1-rt)*5*rsz);ring.material.opacity=Math.max(0,rt)*.8}else ring.material.opacity=0}
+// [length cm at max weight, min size, max size (slot), bag limit, flag p=protected n=noxious]
+const RU={cod:[110,55,75,2],tcod:[80,0,0,0,'p'],gp:[60,30,0,5],red:[40,0,0,10],carp:[80,0,0,0,'n'],rbt:[60,25,0,5],brt:[70,25,0,5],barra:[120,58,120,5],sar:[90,40,0,2],bream:[45,25,0,20],flat:[90,36,70,10],mull:[160,70,0,2],whit:[40,27,0,20],tail:[70,30,0,10],sal:[80,0,0,20],king:[150,65,0,5],groper:[110,0,0,0,'p'],whaler:[260,0,0,1],gnurse:[300,0,0,0,'p']};
+const lenOf=(id,w)=>Math.round(RU[id][0]*Math.cbrt(w/FISH[id].w[1])*1.1);
+const illegal=it=>{const r=RU[it.id];return r[4]==='p'?600:(it.len<r[1]||(r[2]&&it.len>r[2]))?300:0};
+function legalTxt(id,len){const r=RU[id];if(r[4]==='p')return 'PROTECTED species. Release it now or get fined heaps!';if(r[4]==='n')return 'Noxious pest. Keep it, releasing it alive is illegal.';const lim=r[1]||r[2]?`Legal size ${r[1]}${r[2]?'-'+r[2]:'+'}cm`:'No size limit';return len<r[1]?lim+'. UNDERSIZE, release it':r[2]&&len>r[2]?lim+'. OVERSIZE (slot limit), release it':lim+'. Keeper!'+(r[3]?` Bag limit ${r[3]}.`:'')}
+function inspect(){let fine=0,n=0;const cnt={};bag=bag.filter(it=>{let f=illegal(it);if(!f){const r=RU[it.id];cnt[it.id]=(cnt[it.id]||0)+1;if(r[3]&&cnt[it.id]>r[3])f=250}if(f){fine+=f;n++}return !f});return[fine,n]}
+function decide(k){if(!pend)return;const f=FISH[pend.id],r=RU[pend.id];if(k){bag.push(pend);say(`${pend.len}cm ${f.n} kept in the esky. Sell it at the shop (E)`,3)}else if(r[4]==='n'){money-=150;say('FINED $150: returning a noxious carp alive is illegal',4)}else say('Released. Swim off, legend 🐟',2);pend=null;if(held){cam.remove(held);held=null}}
+function sellUI(){return `${blitz()?'<p>🔥 CARP BLITZ: carp pay 3×!</p>':''}<p>Esky: ${bag.map(it=>FISH[it.id].n+' '+it.len+'cm').join(', ')||'empty'}</p><button onclick="sell()">Sell esky (officer inspects first: illegal fish = fines + seizure)</button>`}
+function sell(){if(!bag.length){$('shm').textContent='Esky is empty';return}const[f,n]=inspect();let s=0;bag.forEach(it=>s+=Math.round(it.wt*FISH[it.id].$*(it.id==='carp'&&blitz()?3:1)));const cnt=bag.length;bag=[];money+=s-f;drawShop();$('shm').textContent=(n?`🚔 Officer seized ${n} illegal fish. FINE $${f}. `:'')+`Sold ${cnt} legal fish for $${s}. Cash $${money}`}
+const V3=T.Vector3,WH=new T.Color(0xffffff),M4=(x,y,z,sx=1,sy=1,sz=1,rx=0,rz=0,ry=0)=>new T.Matrix4().compose(new V3(x,y,z),new T.Quaternion().setFromEuler(new T.Euler(rx,ry,rz)),new V3(sx,sy,sz));
+const cyl=(a,b,h,x,y,z,c,rx=0,rz=0)=>[new T.CylinderGeometry(a,b,h,6),M4(x,y,z,1,1,1,rx,rz),c],bl=(r,x,y,z,c,sy=.75)=>[new T.IcosahedronGeometry(r,0),M4(x,y,z,1,sy,1),c],cone=(r,h,x,y,z,c,rx=0,rz=0)=>[new T.ConeGeometry(r,h,6),M4(x,y,z,1,1,1,rx,rz),c];
+function mg(parts){const pos=[],idx=[],col=[];let o=0;parts.forEach(([g,m,c])=>{const q=g.clone().applyMatrix4(m),p=q.attributes.position,cc=new T.Color(c);for(let i=0;i<p.count;i++){pos.push(p.getX(i),p.getY(i),p.getZ(i));col.push(cc.r,cc.g,cc.b)}if(q.index)for(const k of q.index.array)idx.push(k+o);else for(let i=0;i<p.count;i++)idx.push(o+i);o+=p.count});const G=new T.BufferGeometry();G.setAttribute('position',new T.Float32BufferAttribute(pos,3));G.setAttribute('color',new T.Float32BufferAttribute(col,3));G.setIndex(idx);G.computeVertexNormals();return G}
+const SPS={gum:()=>mg([cyl(.2,.42,6,0,3,0,0xd2cbb8),cyl(.1,.2,3,.9,6.4,0,0xc8c0ac,0,-.7),cyl(.1,.2,3,-.8,6,.3,0xc8c0ac,0,.6),bl(1.7,0,7.8,0,0x6f8a5a),bl(1.5,1.8,8.4,0,0x7d9a68),bl(1.5,-1.7,7.6,.5,0x5e7a50),bl(1.3,.3,9.2,-.8,0x84a070)]),
+snow:()=>mg([cyl(.2,.4,3,0,1.5,0,0xe0d8c8),cyl(.15,.25,3,.6,4,0,0xd8d0c0,0,-.4),bl(1.6,1.4,6,0,0x7d8f78),bl(1.3,-.4,5.4,.5,0x8a9a84)]),
+paper:()=>mg([cyl(.3,.5,5,0,2.5,0,0xe8dcc0),cyl(.12,.25,3,.8,5.2,0,0xe0d4b8,0,-.6),bl(2,0,6,0,0x5f7f4a,.6),bl(1.6,1.6,5,0,0x6a8a52,.6),bl(1.5,-1.5,5.4,.4,0x557a44,.6)]),
+palm:()=>{const p=[cyl(.16,.26,7,0,3.5,0,0x8a6a40)];for(let i=0;i<9;i++){const a=i/9*6.283;p.push([new T.BoxGeometry(2.6,.06,.55),M4(Math.cos(a)*1.2,7.1,Math.sin(a)*1.2,1,1,1,0,-.45,-a),i%2?0x3f8a3a:0x4f9a44])}return mg(p)},
+bank:()=>mg([cyl(.25,.4,2.6,0,1.3,0,0x4a3a2a),cyl(.12,.2,1.8,.7,2.8,0,0x4a3a2a,0,-.6),bl(1.3,0,3.4,0,0x4f6f3a),bl(1.1,1.4,4,0,0x5a7a40),cone(.18,.7,0,4.2,0,0xd8a030),cone(.18,.7,1.4,4.7,0,0xd0902a)]),
+wattle:()=>mg([cyl(.15,.28,2.4,0,1.2,0,0x5a4632),bl(1.5,0,3.4,0,0xe8c830),bl(1.2,1.1,3,.3,0xd8b828),bl(1.1,-1,3.1,-.3,0x7a9a40)]),
+oak:()=>mg([cyl(.2,.35,5,0,2.5,0,0x5a4a3a),cone(1.7,2.6,0,4.2,0,0x4e6a4a),cone(1.4,2.2,0,5.8,0,0x5b7a56),cone(1,1.8,0,7,0,0x486646)]),
+mang:()=>mg([0,1,2,3,4].map(i=>cyl(.05,.09,2,Math.cos(i*1.26)*.9,.8,Math.sin(i*1.26)*.9,0x5a4632,Math.sin(i*1.26)*.5,-Math.cos(i*1.26)*.5)).concat([bl(1.5,0,2.4,0,0x3f6a3a,.7),bl(1.1,.9,2,.3,0x4a7a42,.7)])),
+bush:()=>mg([bl(.7,0,.5,0,0x4f7a3a),bl(.55,.6,.4,.2,0x5f8a44),bl(.5,-.5,.4,-.2,0x477036)]),gre:()=>mg([bl(.7,0,.55,0,0x557a3e),bl(.12,.3,.9,.2,0xd02a2a,1),bl(.12,-.3,.8,-.2,0xe03a2a,1),bl(.1,.1,1,-.3,0xd8302a,1)]),salt:()=>mg([bl(.65,0,.45,0,0xa8b8a0),bl(.5,.5,.35,.2,0xb8c8b0)]),
+tus:()=>mg([0,1,2,3,4,5].map(i=>cone(.1,1.1,Math.cos(i*1.05)*.18,.5,Math.sin(i*1.05)*.18,i%2?0xb8b060:0x9aa04e,Math.sin(i*1.05)*.35,-Math.cos(i*1.05)*.35)))};
+const MIX=[[['gum',5],['paper',2],['wattle',1]],[['snow',6],['wattle',1]],[['palm',3],['paper',3],['gum',2],['wattle',1]],[['mang',4],['gum',3],['oak',2],['paper',1]],[['bank',3],['oak',3],['wattle',2],['gum',1]],[['oak',4],['bank',3]],[['gum',5],['paper',2],['wattle',1]],[['gum',3],['bank',2],['wattle',2]],[['oak',3],['bank',2]]],BM=[[['bush',3],['gre',1],['salt',1]],[['bush',3],['tus',2]],[['bush',3],['gre',2]],[['bush',3],['salt',2],['gre',1]],[['bush',3],['salt',2],['gre',1]],[['salt',3],['tus',3]],[['bush',3],['gre',1],['salt',1]],[['bush',3],['tus',3]],[['salt',3],['tus',2]]];
+function plant(){const mat=new T.MeshLambertMaterial({vertexColors:true,flatShading:true}),tot=Math.max(M.trees,30);[[MIX[mapI],tot,1.3,9,1],[BM[mapI],230,.3,9,0]].forEach(([mx,N,hmin,hmax,cast])=>{const w=mx.reduce((a,b)=>a+b[1],0);mx.forEach(([nm,q])=>{const n=Math.round(N*q/w);if(n<1)return;const im=new T.InstancedMesh(SPS[nm](),mat,n),m=new T.Matrix4(),col=new T.Color(),lo=nm==='mang'?-.3:hmin,hi=nm==='mang'?1.1:hmax;let k=0;for(let a=0;k<n&&a<n*30;a++){const x=(rnd()-.5)*280,z=(rnd()-.5)*280,h=Hf(x,z);if(h<lo||h>hi||Math.hypot(x-sp[0],z-sp[1])<10||Math.hypot(x-shop.x,z-shop.z)<12)continue;const s=.8+rnd()*.7;m.compose(new V3(x,h,z),new T.Quaternion().setFromEuler(new T.Euler(0,rnd()*6.28,0)),new V3(s,s*(.9+rnd()*.3),s));im.setMatrixAt(k,m);im.setColorAt(k,col.setScalar(.8+rnd()*.25));k++}im.count=k;im.frustumCulled=false;im.castShadow=!!cast;world.add(im)})});grass()}
+const gh=(x,z)=>{if(slab&&x>slab[0]&&x<slab[2]&&z>slab[1]&&z<slab[3])return slab[4];if(ramp){const px=x-ramp.ox,pz=z-ramp.oz,t=(px*ramp.dx+pz*ramp.dz)/ramp.len,l=Math.abs(px*ramp.dz-pz*ramp.dx);if(t>=0&&t<=1&&l<3)return ramp.y0+(ramp.y1-ramp.y0)*t+.15}return Hf(x,z)},blocked=(x,z)=>walls.some(w=>x>w[0]-.35&&x<w[2]+.35&&z>w[1]-.35&&z<w[3]+.35);
+function buildShop(){const cx=sp[0]+15,cz=sp[1],fy=Math.max(...[[0,0],[6,5],[-6,5],[6,-5],[-6,-5]].map(d=>Hf(cx+d[0],cz+d[1])))+.15;walls=[];slab=[cx-6.6,cz-5.6,cx+6.6,cz+5.6,fy];shop={x:cx+3.4,z:cz};
+const L=(w,h,d,x,y,z,c,sol)=>{const m=new T.Mesh(new T.BoxGeometry(w,h,d),new T.MeshLambertMaterial({color:c}));m.position.set(x,y,z);m.castShadow=m.receiveShadow=true;world.add(m);if(sol)walls.push([x-w/2,z-d/2,x+w/2,z+d/2]);return m},wc=0xd9c7a0,wy=fy+1.8;
+L(13.2,4,11.2,cx,fy-2,cz,0x8a8a84);L(12.4,.12,10.4,cx,fy+.06,cz,0xb08a5a);L(.3,3.6,10.4,cx+6,wy,cz,wc,1);L(12.3,3.6,.3,cx,wy,cz-5,wc,1);L(12.3,3.6,.3,cx,wy,cz+5,wc,1);L(.3,3.6,3.8,cx-6,wy,cz-3.1,wc,1);L(.3,3.6,3.8,cx-6,wy,cz+3.1,wc,1);L(.3,1.1,2.4,cx-6,fy+3.05,cz,wc);L(13.6,.35,11.6,cx,fy+3.7,cz,0x2e6f4e);L(.2,.9,3.6,cx-6.3,fy+3.1,cz,0xffd24a);L(.8,1.1,6,cx+1.6,fy+.6,cz,0x6b4a2a,1);L(1,.5,.6,cx+4.5,fy+.3,cz+3.4,0x2a7ae0);
+for(let k=0;k<3;k++){L(10,.08,.6,cx,fy+.9+k*.75,cz-4.6,0x6b4a2a);for(let i=0;i<14;i++)L(.35,.2,.2,cx-4.6+i*.7,fy+1.05+k*.75,cz-4.6,[0xe04a2a,0x2a8ae0,0xf0c020,0x40b060,0xd05090][(i+k)%5])}
+for(let i=0;i<9;i++){const r=new T.Mesh(new T.CylinderGeometry(.015,.03,2.6,6),new T.MeshLambertMaterial({color:i%2?0x1c1c20:0x5a3a1c}));r.position.set(cx-3.5+i*.5,fy+1.3,cz+4.5);r.rotation.x=.12;world.add(r)}
+const mf=makeFish('barra');mf.position.set(cx+5.6,fy+2.5,cz+1);mf.rotation.y=-Math.PI/2;mf.scale.setScalar(2.2);world.add(mf);const lt=new T.PointLight(0xffe6b0,.9,16);lt.position.set(cx,fy+3,cz);world.add(lt);
+const n=new T.Group(),mk=c=>new T.MeshLambertMaterial({color:c}),ad=(g,c,x,y,z)=>{const m=new T.Mesh(g,mk(c));m.position.set(x,y,z);n.add(m)};ad(new T.CylinderGeometry(.24,.28,.75,10),0x2f6fa0,0,1.15,0);ad(new T.CylinderGeometry(.2,.22,.8,10),0xb8a070,0,.4,0);ad(new T.SphereGeometry(.17,14,12),0xd9a077,0,1.7,0);ad(new T.CylinderGeometry(.36,.36,.03,16),0x8a6a40,0,1.84,0);ad(new T.CylinderGeometry(.16,.19,.2,14),0x8a6a40,0,1.95,0);ad(new T.SphereGeometry(.02,6,6),0x000000,.06,1.72,.16);ad(new T.SphereGeometry(.02,6,6),0x000000,-.06,1.72,.16);ad(new T.CylinderGeometry(.07,.07,.6,8),0x2f6fa0,.34,1.2,.1);ad(new T.CylinderGeometry(.07,.07,.6,8),0x2f6fa0,-.34,1.2,.1);
+npc=makeNPC();npc.position.set(cx+3.4,fy+.12,cz);world.add(npc)}
+function bendRod(now,dt){const f=fs==='fight'||fs==='snag',b=(f?tens*1.1:0)+drop*.8+tap*.6*LINES[rig.line].sens+(fs==='bite'?.9:0)-(fs==='charge'?charge*.5:0);tap=Math.max(0,tap-dt*1.5);segs.forEach((g,i)=>{g.rotation.x=-b/SN*(.4+i/SN*1.4);g.rotation.z=Math.sin(now/35)*tap*.03*(i/SN)})}
+function updLine(){const lp=lure.position,tip=tipO.getWorldPosition(new T.Vector3()),sg=(fs==='fight'||fs==='snag'?.12*(1-tens):fs==='fly'?.25:.7)+drop*1.3,a=lg.attributes.position;for(let i=0;i<24;i++){const u=i/23;a.setXYZ(i,tip.x+(lp.x-tip.x)*u,tip.y+(lp.y-tip.y)*u-Math.sin(u*Math.PI)*sg,tip.z+(lp.z-tip.z)*u)}a.needsUpdate=true}
+function dropLure(){let x=P.x-Math.sin(yaw)*7,z=P.z-Math.cos(yaw)*7;if(Hf(x,z)<.3){x=P.x+3;z=P.z}const y=gh(x,z),m=new T.Mesh(new T.OctahedronGeometry(.2,0),new T.MeshBasicMaterial({color:0xffd24a}));m.position.set(x,y+.2,z);scene.add(m);gl.push({m,y});say('✨ Something shiny glinting on the ground ahead...',4)}
+const DAYS=['Sunday','Monday','Tuesday','Wednesday','Thursday','Friday','Saturday'],blitz=()=>day===2&&M&&M.n.startsWith('Turon'),SHK={whaler:1,gnurse:1};
+const HOOKS=[{n:'#8 light hook',sz:1,hold:2.2,$:0,own:1},{n:'#4 all-rounder',sz:2,hold:2.5,$:0,own:1},{n:'2/0 heavy hook',sz:3,hold:3,$:40,own:0},{n:'3/0 circle hook',sz:3,hold:4.5,$:90,own:0}];
+const LINES=[{n:'6lb mono',str:1,vis:1,sens:.8,$:0,own:1},{n:'10lb fluoro',str:1.2,vis:1.12,sens:.9,$:60,own:0},{n:'20lb braid',str:1.7,vis:.88,sens:1.4,$:90,own:0},{n:'50lb heavy braid',str:2.6,vis:.7,sens:1.5,$:220,own:0}];
+const BAITS=[{n:'Prawn',f:{bream:1.5,whit:1.6,flat:1.3,mull:1.2}},{n:'Earthworm',f:{rbt:1.6,brt:1.5,red:1.6,bream:1.2,carp:1.5,gp:1.1}},{n:'Yabby',f:{cod:1.8,gp:1.7,carp:1.3,sar:1.2}},{n:'Cut mullet',f:{mull:1.8,king:1.4,sal:1.5,tail:1.6,barra:1.4,flat:1.2,whaler:1.6,gnurse:1.2}}];
+const BF=id=>Math.max(.25,1-Math.abs(HOOKS[rig.hook].sz-FISH[id].s)*.28)*(LURES[sel].bait?(BAITS[rig.bait].f[id]||1):1);
+function rodUI(){const b=(t,f,on)=>`<button onclick="${f}">${on?'✔ ':''}${t}</button>`;return (rigd?'':'<button onclick="rigUp(1)">🪝 Tie on / re-rig now'+(snapped?' ($10, line snapped)':'')+'</button>')+`<p>Cash: $${money}. Small hooks catch small fish best, big hooks suit big fish. Bait type changes who bites. Braid is sensitive but spooky, fluoro is stealthy.</p><h3>Lure / bait slot</h3>`+LURES.map((l,i)=>b((i===3?'Bait: '+BAITS[rig.bait].n:l.n)+' ×'+l.c+(l.pro?' (pro)':''),`setSel(${i})`,i===sel)).join('')+'<h3>Bait type</h3>'+BAITS.map((x,i)=>b(x.n,`rig.bait=${i};LURES[3].n='Bait: '+BAITS[${i}].n;if(sel===3)rigd=false;rodR()`,i===rig.bait)).join('')+'<h3>Hook</h3>'+HOOKS.map((h,i)=>b(h.n+(h.own?'':' · $'+h.$),`pick('hook',${i})`,i===rig.hook)).join('')+'<h3>Line</h3>'+LINES.map((h,i)=>b(h.n+(h.own?'':' · $'+h.$),`pick('line',${i})`,i===rig.line)).join('')+`<h3>Drag</h3><input type=range min=0 max=100 value=${Math.round(rig.drag*100)} oninput="rig.drag=this.value/100" style="width:100%"><p>Loose drag lets fish run with line. Tight drag risks a snap.</p>`}
+function rodR(){$('rodb').innerHTML=rodUI()}function openRod(){document.exitPointerLock();$('rod').hidden=false;over=true;rodR()}function closeRod(){$('rod').hidden=true;over=!$('menu').hidden||!$('shop').hidden}
+function setSel(i){if(fs==='idle'){if(i!==sel)rigd=false;sel=i;rodR()}}function pick(k,i){const it=(k==='hook'?HOOKS:LINES)[i];if(!it.own){if(money<it.$)return;money-=it.$;it.own=1}if(rig[k]!==i)rigd=false;rig[k]=i;rodR()}
+function makeNPC(){return makeNPC2()}
+function makeNPCold(){const n=new T.Group(),mk=c=>new T.MeshStandardMaterial({color:c,roughness:.8}),ad=(p,g,c,x,y,z,sx=1,sy=1,sz=1)=>{const m=new T.Mesh(g,mk(c));m.position.set(x,y,z);m.scale.set(sx,sy,sz);p.add(m);return m},C=T.CylinderGeometry,S=T.SphereGeometry;
+ad(n,new C(.12,.11,.85,10),0x3a4a6a,.13,.43,0);ad(n,new C(.12,.11,.85,10),0x3a4a6a,-.13,.43,0);ad(n,new T.BoxGeometry(.2,.12,.34),0x3a2a1a,.13,.06,.06);ad(n,new T.BoxGeometry(.2,.12,.34),0x3a2a1a,-.13,.06,.06);ad(n,new C(.27,.3,.75,12),0xe07a2a,0,1.22,0);ad(n,new T.BoxGeometry(.5,.55,.06),0x2a6f4e,0,1.1,.27);ad(n,new C(.07,.08,.14,8),0xe0a880,0,1.65,0);
+const h=ad(n,new S(.2,20,16),0xe0a880,0,1.85,0,1,1.08,1);ad(h,new S(.05,8,8),0xe0a880,0,-.02,.2);ad(h,new S(.04,10,8),0xffffff,.08,.04,.17);ad(h,new S(.04,10,8),0xffffff,-.08,.04,.17);ad(h,new S(.02,8,8),0x3a2410,.08,.04,.205);ad(h,new S(.02,8,8),0x3a2410,-.08,.04,.205);ad(h,new T.BoxGeometry(.09,.015,.02),0x6a4a2a,.08,.1,.18);ad(h,new T.BoxGeometry(.09,.015,.02),0x6a4a2a,-.08,.1,.18);
+const sm=ad(h,new T.TorusGeometry(.07,.012,6,14,Math.PI),0x8a3a2a,0,-.03,.19);sm.rotation.z=Math.PI;ad(h,new S(.05,8,8),0xe0a880,.2,0,0);ad(h,new S(.05,8,8),0xe0a880,-.2,0,0);ad(h,new S(.05,8,8),0xe8907a,.13,-.04,.15,1,.6,.4);ad(h,new S(.05,8,8),0xe8907a,-.13,-.04,.15,1,.6,.4);
+ad(h,new C(.4,.4,.025,20),0xb08a5a,0,.16,0);ad(h,new C(.15,.19,.22,16),0xb08a5a,0,.27,0);ad(h,new C(.192,.192,.05,16),0x4a3220,0,.19,0);
+const arm=s=>{const g=new T.Group();g.position.set(s*.34,1.45,0);ad(g,new C(.07,.065,.5,8),0xe07a2a,0,-.25,0);ad(g,new S(.07,10,8),0xe0a880,0,-.52,0);n.add(g);return g};arm(-1);n.userData.arm=arm(1);return n}
+function rigUp(c){if(rigd||fs!=='idle'||pend||rigT>0)return;const l=LURES[sel];if(l.c<=0){say('None of those left. Visit Shazza (F)',3);return}if(snapped){if(money<10){say('You need $10 to re-rig after a snap',3);return}money-=10;snapped=false}if(c)closeRod();rigT=1.8;say('Tying on '+(l.bait?BAITS[rig.bait].n:l.n)+'...',1.8)}
+const cuT=new T.WebGLCubeRenderTarget(128,{generateMipmaps:true,minFilter:T.LinearMipmapLinearFilter}),cubeCam=new T.CubeCamera(1,1000,cuT);cubeCam.children.forEach(c=>c.layers.set(1));scene.add(cubeCam);let envT=0;
+const scTex=(()=>{const c=document.createElement('canvas');c.width=c.height=128;const x=c.getContext('2d');x.fillStyle='#888';x.fillRect(0,0,128,128);for(let j=0;j<9;j++)for(let i=-1;i<9;i++){const px=i*16+(j%2)*8,py=j*16,g=x.createRadialGradient(px,py,2,px,py,11);g.addColorStop(0,'#fff');g.addColorStop(1,'#333');x.fillStyle=g;x.beginPath();x.arc(px,py,11,0,6.3);x.fill()}const t=new T.CanvasTexture(c);t.wrapS=t.wrapT=T.RepeatWrapping;t.repeat.set(40,7);return t})();
+const gU={value:0},GC=[0x6a8a3a,0x7a9a50,0x3f8a3a,0x5a8a45,0x6a8f40,0xb4a468,0x6a8a3a,0x9a8a48,0xb4a468];
+function grass(){const pp=[],nm=[],cl=[];for(let b=0;b<5;b++){const a=b*.63,w=.035,dx=Math.cos(a),dz=Math.sin(a),ln=.12+.1*(b%3);pp.push(-dx*w,0,-dz*w,dx*w,0,dz*w,dx*ln*.5,.55+.12*(b%2),dz*ln*.5);nm.push(0,1,0,0,1,0,0,1,0);cl.push(.4,.4,.4,.4,.4,.4,1.1,1.1,1.1)}
+const g=new T.BufferGeometry();g.setAttribute('position',new T.Float32BufferAttribute(pp,3));g.setAttribute('normal',new T.Float32BufferAttribute(nm,3));g.setAttribute('color',new T.Float32BufferAttribute(cl,3));
+const mat=new T.MeshLambertMaterial({vertexColors:true,side:T.DoubleSide});mat.onBeforeCompile=s=>{s.uniforms.uT=gU;s.vertexShader='uniform float uT;\n'+s.vertexShader.replace('#include <begin_vertex>','#include <begin_vertex>\ntransformed.x+=sin(uT*1.7+instanceMatrix[3].x*.4+instanceMatrix[3].z*.3)*position.y*.18;transformed.z+=cos(uT*1.3+instanceMatrix[3].z*.35)*position.y*.12;')};
+const N=mapI===5||mapI===8?9000:45000,im=new T.InstancedMesh(g,mat,N),m=new T.Matrix4(),col=new T.Color();let k=0;
+for(let a=0;k<N&&a<N*6;a++){const x=(rnd()-.5)*296,z=(rnd()-.5)*296,h=Hf(x,z);if(h<.5||(M.k==='beach'&&(h<.9||rnd()<.3))||(slab&&x>slab[0]-.5&&x<slab[2]+.5&&z>slab[1]-.5&&z<slab[3]+.5))continue;const s=.7+rnd()*.8;m.compose(new V3(x,h-.03,z),new T.Quaternion().setFromEuler(new T.Euler(0,rnd()*6.28,0)),new V3(s,.5+rnd()*1.1,s));im.setMatrixAt(k,m);im.setColorAt(k,col.set(GC[mapI]).offsetHSL((rnd()-.5)*.04,0,(rnd()-.5)*.1));k++}im.count=k;im.frustumCulled=false;world.add(im);
+const pb=new T.InstancedMesh(new T.DodecahedronGeometry(.07,0),new T.MeshLambertMaterial({flatShading:true}),700);let q=0;for(let a=0;q<700&&a<9000;a++){const x=(rnd()-.5)*296,z=(rnd()-.5)*296,h=Hf(x,z);if(h<-.3||h>.6)continue;const s=.5+rnd()*1.6;m.compose(new V3(x,h,z),new T.Quaternion().setFromEuler(new T.Euler(rnd(),rnd(),rnd())),new V3(s,s*.6,s));pb.setMatrixAt(q,m);pb.setColorAt(q,col.setScalar(.4+rnd()*.4));q++}pb.count=q;pb.frustumCulled=false;world.add(pb)}
+function makeNPC2(){const n=new T.Group(),mk=(c,r=.7)=>new T.MeshStandardMaterial({color:c,roughness:r}),C=T.CylinderGeometry,S=T.SphereGeometry,ad=(p,g,c,x,y,z,sx=1,sy=1,sz=1,r)=>{const m=new T.Mesh(g,mk(c,r));m.position.set(x,y,z);m.scale.set(sx,sy,sz);m.castShadow=true;p.add(m);return m},sk=0xd9a37e;
+[1,-1].forEach(s=>{ad(n,new C(.07,.06,.4,12),sk,s*.1,.28,0);ad(n,new C(.11,.1,.5,12),0xa89868,s*.1,.72,0);ad(n,new T.BoxGeometry(.11,.09,.26),0x3a2a1c,s*.1,.045,.04)});
+ad(n,new C(.2,.19,.5,16),0x4f7aa8,0,1.27,0,1,1,.8);ad(n,new C(.215,.215,.05,16),0x2a2018,0,.98,0,1,1,.8);ad(n,new S(.22,16,12),0x4f7aa8,0,1.47,0,1,.35,.75);ad(n,new C(.055,.06,.1,10),sk,0,1.57,0);
+const h=new T.Group();h.position.set(0,1.72,0);n.add(h);ad(h,new S(.105,24,18),sk,0,0,0,1,1.22,1.05,.55);ad(h,new S(.085,20,14),sk,0,-.075,.012,1,.75,.95,.55);ad(h,new S(.022,10,8),0xcf9470,0,-.015,.105,1,1.2,1);
+[1,-1].forEach(s=>{ad(h,new S(.017,12,10),0xf4f0ea,s*.038,.018,.088);ad(h,new S(.0095,10,8),0x4a6a8a,s*.038,.018,.102);ad(h,new S(.005,8,8),0x000000,s*.038,.018,.108);ad(h,new T.BoxGeometry(.036,.007,.01),0x5a4028,s*.038,.048,.093);ad(h,new S(.016,10,8),sk,s*.108,0,0,.5,1.2,1)});
+ad(h,new T.BoxGeometry(.04,.005,.008),0x9a5a50,0,-.062,.105);ad(h,new C(.25,.25,.01,24),0xb08a5a,0,.105,0,1,1,1,.9);ad(h,new C(.098,.116,.12,18),0xb08a5a,0,.165,0,1,1,1,.9);ad(h,new C(.118,.118,.022,18),0x3a2818,0,.125,0,1,1,1,.9);
+const arm=s=>{const g=new T.Group();g.position.set(s*.26,1.45,0);ad(g,new C(.06,.055,.26,10),0x4f7aa8,0,-.13,0);ad(g,new C(.048,.042,.26,10),sk,0,-.38,0);ad(g,new S(.048,10,8),sk,0,-.53,0);n.add(g);return g};arm(-1);n.userData.arm=arm(1);n.scale.setScalar(.95);return n}
+const SK='outbackAnglerSave1';let svF=0,svT=15,nosave=0;
+function save(m){if(nosave)return;try{localStorage.setItem(SK,JSON.stringify({money,ul,lvl,rig,sel,bag,lc:LURES.map(l=>l.c),ho:HOOKS.map(h=>h.own),li:LINES.map(l=>l.own),lg:$('lg').dataset.l||''}));svF=1.5;if(m)say('Game saved 💾',2)}catch(e){}}
+function loadSave(){try{const s=JSON.parse(localStorage.getItem(SK)||'null');if(!s)return;money=s.money;ul=s.ul;lvl=s.lvl;Object.assign(rig,s.rig);sel=s.sel;bag=s.bag||[];s.lc.forEach((c,i)=>{if(LURES[i])LURES[i].c=c});s.ho.forEach((o,i)=>{if(HOOKS[i])HOOKS[i].own=o});s.li.forEach((o,i)=>{if(LINES[i])LINES[i].own=o});LURES[3].n='Bait: '+BAITS[rig.bait].n;if(s.lg){$('lg').dataset.l=s.lg;$('lg').innerHTML=s.lg.split('|').join('<br>')}$('mnote').textContent='💾 Save loaded: $'+money}catch(e){}}
+addEventListener('beforeunload',()=>save());document.addEventListener('visibilitychange',()=>{if(document.hidden)save()});
+const WI={clear:'☀️',cloudy:'⛅',rain:'🌧️',storm:'⛈️',fog:'🌫️'},WXT={clear:{g:0,fd:.006,sun:1,rain:0,wave:0,bite:.9},cloudy:{g:.45,fd:.007,sun:.6,rain:0,wave:.2,bite:1.3},rain:{g:.7,fd:.011,sun:.4,rain:1,wave:.4,bite:1.5},storm:{g:1,fd:.014,sun:.25,rain:1,wave:1,bite:.3},fog:{g:.3,fd:.03,sun:.5,rain:0,wave:0,bite:1.2}},W={g:0,fd:.006,sun:1,rain:0,wave:0,bite:.9,lf:0};
+const pickWx=()=>['clear','clear','cloudy','cloudy','rain','fog','storm'][Math.floor(rnd()*7)],shopOpen=()=>hr>=6&&hr<20;
+function wxu(dt){const t=WXT[wx];for(const k in t)W[k]+=(t[k]-W[k])*Math.min(1,dt*.4);W.lf=Math.max(0,W.lf-dt*3)}
+const RN=1400,rp=new Float32Array(RN*6),rm=new T.LineSegments((()=>{const g=new T.BufferGeometry();for(let i=0;i<RN;i++){const x=(rnd()-.5)*40,y=rnd()*20-3,z=(rnd()-.5)*40;rp.set([x,y,z,x-.1,y-.7,z],i*6)}g.setAttribute('position',new T.BufferAttribute(rp,3));return g})(),new T.LineBasicMaterial({color:0xaac4dd,transparent:true,opacity:0,depthWrite:false}));rm.frustumCulled=false;scene.add(rm);
+function rainUp(dt){rm.position.copy(cam.position);rm.material.opacity=W.rain*.55;rm.visible=W.rain>.02;if(!rm.visible)return;for(let i=0;i<RN;i++){const o=i*6;let y=rp[o+1]-20*dt;if(y<-3)y+=21;rp[o+1]=y;rp[o+4]=y-.7}rm.geometry.attributes.position.needsUpdate=true}
+function farField(){const G=new T.PlaneGeometry(3000,3000,100,100);G.rotateX(-Math.PI/2);const ps=G.attributes.position,col=new Float32Array(ps.count*3),c1=new T.Color(M.c1),c2=new T.Color(M.c2),c3=new T.Color(M.c3),tc=new T.Color();for(let v=0;v<ps.count;v++){const x=ps.getX(v),z=ps.getZ(v);let h=Hf(x,z);tc.copy(h<.1?c3:h<.9?c1:c2);col.set([tc.r,tc.g,tc.b],v*3);if(Math.abs(x)<149&&Math.abs(z)<149)h-=.7;ps.setY(v,h)}G.setAttribute('color',new T.BufferAttribute(col,3));G.computeVertexNormals();world.add(new T.Mesh(G,new T.MeshLambertMaterial({vertexColors:true})))}
+function buildRamp(){ramp=null;rampPt=null;if(M.nb)return;let tx=0,tz=0,f=0;for(let r=6;r<140&&!f;r+=3)for(let a=0;a<36;a++){const x=sp[0]+Math.cos(a/36*6.283)*r,z=sp[1]+Math.sin(a/36*6.283)*r;if(Math.abs(x)<135&&Math.abs(z)<135&&Hf(x,z)<-1.2&&Math.hypot(x-shop.x,z-shop.z)>14){tx=x;tz=z;f=1;break}}if(!f)return;
+let dx=tx-sp[0],dz=tz-sp[1];const L0=Math.hypot(dx,dz);dx/=L0;dz/=L0;let s=0;while(Hf(sp[0]+dx*s,sp[1]+dz*s)>.3&&s<L0)s+=1;const ox=sp[0]+dx*(s-5),oz=sp[1]+dz*(s-5),len=16,y0=Hf(ox,oz)+.12,y1=-1.1,m=new T.Mesh(new T.BoxGeometry(5,.3,len),new T.MeshLambertMaterial({color:0x9a9a94}));
+m.rotation.order='YXZ';m.rotation.y=Math.atan2(dx,dz);m.rotation.x=Math.atan2(y0-y1,len);m.position.set(ox+dx*len/2,(y0+y1)/2,oz+dz*len/2);m.receiveShadow=true;world.add(m);ramp={ox,oz,dx,dz,len,y0,y1};rampPt={x:ox+dx*len*.72,z:oz+dz*len*.72,ang:Math.atan2(dx,dz)}}
+function spawnBoat(){if(!rampPt){say('No ramp here. Ask Shazza',3);return}bp={x:rampPt.x,z:rampPt.z};boatM.position.set(bp.x,.1,bp.z);boatM.rotation.y=rampPt.ang;boatM.visible=true;say('Your boat is waiting on the ramp. Walk to it and press B',4)}
+function tb2(){if(fs!=='idle')return;if(boat){for(let r=2;r<45;r+=2)for(let a=0;a<16;a++){const x=P.x+Math.cos(a/16*6.283)*r,z=P.z+Math.sin(a/16*6.283)*r;if(gh(x,z)>.9&&Math.abs(x)<139&&Math.abs(z)<139){bp={x:P.x,z:P.z};boatM.position.set(bp.x,.1,bp.z);boatM.visible=true;P.x=x;P.z=z;boat=false;say('Back on land. Your boat is moored here');return}}say('No shore nearby');return}
+if(M.nb){say('Boats are prohibited on this river');return}if(!rented){say('Rent a boat from Shazza first (F)');return}if(wx==='storm'){say('Storm warning! Too rough to launch',3);return}if(bp&&Math.hypot(P.x-bp.x,P.z-bp.z)<9){P.x=bp.x;P.z=bp.z;boat=true;boatM.visible=true;say('Aboard! WASD to drive');return}say('Walk to your boat first')}
+function rmFish(){if(fM){scene.remove(fM);fM=null}}
+// [H,W,back,belly,fins,decoColour,decoType,tail(f/r),dorsals,mouth,stripe]
+const FM={cod:[.3,.24,0x6a8040,0xe6dfae,0x5a6e38,0x2a3a18,'mot','r',1,.22,0],gp:[.28,.18,0x9a8a3a,0xf0d880,0xb08a40,0x5a4a20,'mot','r',1,.16,0],red:[.27,.17,0x6a7a38,0xe8e0a8,0xe04a20,0x2a3418,'bar','r',2,.12,0],carp:[.34,.2,0x9a7a30,0xd8b868,0xb08a3a,0x7a5a20,'mot','f',1,.1,0],rbt:[.21,.14,0x6a8a78,0xeef2f2,0xa0a8a8,0x1a1a1a,'spot','f',1,.12,0xe0708a],brt:[.23,.16,0x8a6a3a,0xe8d890,0xa08a50,0x3a1a10,'spot','r',1,.13,0],barra:[.27,.17,0x6a8a80,0xe8ecec,0x8a7a50,0x4a5a50,'n','r',2,.2,0],sar:[.24,.17,0x7a6a48,0xe8d0a8,0x8a6a48,0xe08a8a,'spot','r',1,.2,0],bream:[.36,.18,0x7a8a8a,0xe8eef0,0xf0c820,0x20282a,'n','f',1,.1,0],flat:[.14,.34,0x9a8a5a,0xf0e8d0,0x8a7a4a,0x4a3a22,'mot','r',2,.3,0],mull:[.24,.16,0x8a9a9a,0xf4f4f4,0x9a9a9a,0x666666,'n','f',2,.13,0],whit:[.16,.12,0xc8b078,0xf2eee0,0xd8c898,0xa08a50,'spot','f',1,.1,0],tail:[.24,.15,0x4a7a8a,0xe8f0f0,0x9aa8a8,0x222222,'n','f',2,.16,0],sal:[.22,.15,0x3a7a7a,0xeef4f4,0x7a9a9a,0x1a2a2a,'spot','f',1,.13,0],king:[.22,.16,0x3a6aa0,0xeef0f0,0xe8c820,0x222222,'n','f',2,.13,0xe8c820],tcod:[.27,.2,0x6f7a68,0xdad8c0,0x5a6a58,0x20281c,'mot','r',1,.2,0],groper:[.35,.2,0x3a6ab8,0xb8d0e8,0x2a58a0,0x2a58a0,'n','r',1,.15,0],whaler:[.2,.22,0x6a5a48,0xeeeeee,0x4a4036,0,'n','f',2,.3,0],gnurse:[.2,.24,0x7a8088,0xf2f2f2,0x5a6068,0x30343a,'spot','f',2,.32,0]};
+function makeFish(id){const [H,W,bk,bl,fn,dc,ty,tl,dn,mo,st]=FM[id],g=new T.Group(),bg=new T.SphereGeometry(.5,96,64),p=bg.attributes.position,cl=[],c=new T.Color(),A=new T.Color(bk),B=new T.Color(bl),D=new T.Color(dc);
+for(let i=0;i<p.count;i++){const x=p.getX(i)*2,y=p.getY(i)*2,z=p.getZ(i)*2,tp=x<0?1-Math.pow(-x,1.4)*.78:1-Math.pow(Math.max(0,x-.55),2)*2.2;p.setXYZ(i,x*.5,y*H/2*tp,z*W/2*tp);c.copy(B).lerp(A,Math.min(1,Math.max(0,((y+1)/2-.4)*5)));const n=Math.sin(x*23+y*31+z*17)*Math.sin(x*11+z*29+y*5);if(ty==='mot'&&n>.2)c.lerp(D,.6);if(ty==='spot'&&n>.5&&y>-.2)c.copy(D);if(ty==='bar'&&Math.sin(x*14)>.3&&y>-.1)c.lerp(D,.7);if(st&&Math.abs(y-.1)<.1&&x>-.6)c.set(st);c.multiplyScalar(.88+.12*Math.abs(Math.sin(x*70+y*25))*Math.abs(Math.sin(y*60-x*20+z*30)));if(x>.28&&x<.36&&y>-.5)c.multiplyScalar(.7);if(Math.abs(y-.1)<.35&&x<.6)c.lerp(WH,.12*(1-Math.abs(y-.1)/.35));cl.push(c.r,c.g,c.b)}
+bg.setAttribute('color',new T.Float32BufferAttribute(cl,3));bg.computeVertexNormals();g.add(new T.Mesh(bg,new T.MeshPhysicalMaterial({vertexColors:true,roughness:.35,metalness:.15,clearcoat:1,clearcoatRoughness:.15,bumpMap:scTex,bumpScale:1.2})));
+const fm=new T.MeshStandardMaterial({color:fn,side:T.DoubleSide,roughness:.6}),fin=(pts,x=0,y=0,z=0,ry=0)=>{const m=new T.Mesh(new T.ShapeGeometry(new T.Shape(pts.map(q=>new T.Vector2(q[0],q[1])))),fm);m.position.set(x,y,z);m.rotation.y=ry;return m},h=H/2,th=Math.max(.15,H*1.05),tg=new T.Group();
+tg.position.x=-.48;tg.add(fin(tl==='f'?[[0,0],[-.2,th*.55],[-.1,0],[-.2,-th*.55]]:[[0,.04],[-.1,th*.45],[-.2,th*.35],[-.22,0],[-.2,-th*.35],[-.1,-th*.45],[0,-.04]]));g.add(tg);g.userData.tail=tg;
+g.add(fin(dn===2?[[.24,h-.01],[.14,h+H*.38],[-.06,h+H*.2],[-.1,h-.01]]:[[.2,h-.01],[.1,h+H*.28],[-.2,h+H*.24],[-.3,h-.06]]));if(dn===2)g.add(fin([[-.14,h-.03],[-.17,h+H*.18],[-.3,h+H*.1],[-.32,h-.08]]));g.add(fin([[-.15,-h+.01],[-.2,-h-H*.26],[-.3,-h-.1],[-.3,-h+.06]]));
+const ey=H<W?H*.4:H*.14;[1,-1].forEach(s=>{g.add(fin([[0,0],[-.13,-.06],[-.05,.04]],.2,-h*.3,s*W*.45,s*.6));const e=new T.Mesh(new T.SphereGeometry(.026,10,8),new T.MeshBasicMaterial({color:0xf4f0d0})),pu=new T.Mesh(new T.SphereGeometry(.015,8,6),new T.MeshBasicMaterial({color:0}));e.position.set(.36,ey,s*W*.34);pu.position.set(.37,ey,s*W*.38);const ir=new T.Mesh(new T.SphereGeometry(.019,10,8),new T.MeshBasicMaterial({color:0xd8b040}));ir.position.set(.365,ey,s*W*.36);const gw=new T.Mesh(new T.SphereGeometry(.005,6,6),new T.MeshBasicMaterial({color:0xffffff}));gw.position.set(.375,ey+.01,s*W*.395);g.add(e,ir,pu,gw)});
+const mt=new T.Mesh(new T.BoxGeometry(mo,.012,W*.4),new T.MeshBasicMaterial({color:0x1a0f0a}));mt.position.set(.5-mo/2,-H*.1,0);g.add(mt);const dk=new T.MeshBasicMaterial({color:0x1a1410});[1,-1].forEach(s=>{const gp=new T.Mesh(new T.TorusGeometry(H*.38,.004,6,14,Math.PI),dk);gp.rotation.z=Math.PI/2;gp.position.set(.3,0,s*W*.41);g.add(gp);g.add(new T.Mesh(new T.TubeGeometry(new T.CatmullRomCurve3([new T.Vector3(.28,H*.12,s*W*.42),new T.Vector3(0,H*.08,s*W*.47),new T.Vector3(-.3,H*.03,s*W*.3)]),14,.0025,4),new T.MeshBasicMaterial({color:0x8a8470})))});if(id==='carp'){[1,-1].forEach(s=>{const b=new T.Mesh(new T.CylinderGeometry(.003,.005,.07,4),dk);b.position.set(.52,-H*.12,s*W*.15);b.rotation.x=s*.7;g.add(b)})}if(['tail','barra','cod','whaler','gnurse','flat','mull','king'].includes(id)){const tt=new T.Mesh(new T.ConeGeometry(.006,.02,4),new T.MeshBasicMaterial({color:0xf4f0e0}));for(let i=-3;i<=3;i++){const t=tt.clone();t.position.set(.5-mo*.4,-H*.07,i*W*.045);t.rotation.z=3.14;g.add(t)}}return g}
+function rs(){R.setSize(innerWidth,innerHeight,false);cam.aspect=innerWidth/innerHeight;cam.updateProjectionMatrix()}addEventListener('resize',rs);rs();
+// rod, line, lure
+const rod=new T.Group(),segs=[],SN=9,SL=.17;rod.position.set(.28,-.35,-.45);rod.rotation.x=-1.1;cam.add(rod);
+{let par=rod;for(let i=0;i<SN;i++){const g=new T.Group();g.position.y=i?SL:0;par.add(g);const r0=.022-i*.0021,m=new T.Mesh(new T.CylinderGeometry(Math.max(.004,r0-.002),r0,SL,6),new T.MeshStandardMaterial({color:i<2?0x5a3a1c:0x1c1c20,roughness:.4}));m.position.y=SL/2;g.add(m);if(i>1){const q=new T.Mesh(new T.TorusGeometry(.011,.0018,6,12),new T.MeshStandardMaterial({color:0xcccccc,metalness:.9,roughness:.2}));q.position.set(0,SL*.5,-r0-.008);q.rotation.x=1.57;g.add(q);const w=new T.Mesh(new T.CylinderGeometry(r0*.62,r0*.62+.001,.02,6),new T.MeshBasicMaterial({color:0xb02020}));w.position.y=.02;g.add(w)}segs.push(g);par=g}}
+const tipO=new T.Object3D();tipO.position.y=SL;segs[SN-1].add(tipO);const reel=new T.Mesh(new T.CylinderGeometry(.035,.035,.05,12),new T.MeshStandardMaterial({color:0x999999,metalness:.6,roughness:.3}));reel.rotation.z=1.57;reel.position.set(.04,.12,0);segs[0].add(reel);const sp2=new T.Mesh(new T.CylinderGeometry(.03,.03,.03,16),new T.MeshStandardMaterial({color:0xd4a030,metalness:.8,roughness:.25}));sp2.rotation.z=1.57;sp2.position.set(.07,.12,0);segs[0].add(sp2);const hnd=new T.Mesh(new T.BoxGeometry(.01,.01,.06),new T.MeshStandardMaterial({color:0x222222}));hnd.position.set(.075,.12,.03);segs[0].add(hnd);const kn=new T.Mesh(new T.SphereGeometry(.012,8,6),new T.MeshStandardMaterial({color:0xaa2222}));kn.position.set(.075,.12,.062);segs[0].add(kn);
+const lure=new T.Mesh(new T.SphereGeometry(.07,10,8),new T.MeshBasicMaterial({color:0xff7a1a}));lure.visible=false;scene.add(lure);
+const lg=new T.BufferGeometry().setFromPoints(Array.from({length:24},()=>new T.Vector3())),line=new T.Line(lg,new T.LineBasicMaterial({color:0xffffff}));line.frustumCulled=false;line.visible=false;scene.add(line);
+const boatM=new T.Mesh(new T.BoxGeometry(2.4,.7,5.5),new T.MeshLambertMaterial({color:0xc0392b}));boatM.visible=false;scene.add(boatM);
+let world,water,M,Hf,mapI=0,shop,sp,hr=6,quiet=1,qt=40,boat=false,rented=false,lvl=0,sel=1;
+const P={x:0,z:0},keys={};let yaw=0,pitch=0,fs='idle',charge=0,reeling=false,depth=0,ba=0;
+let bag=[],pend=null,ot=80,tap=0,stp=0,gl=[],slab=null,walls=[],npc=null,ul=[1,1,0,0,0,0,0,0,0],day=Math.floor(Math.random()*7),rig={hook:0,line:0,bait:0,drag:.5};let rigd=true,rigT=0,snapped=false,snT=0,ramp=null,rampPt=null,bp=null,wx='clear',wxT=60;
+let drop=0,bh=1,bt=0,held=null,heldT=0,fM=null,fid,fish,wt,str,stam,tens,dist,surge,surgeT,slack,ldir=new T.Vector3(),lv=new T.Vector3(),mt=0,msgT='',shake=0,locked=false,over=true;
+const say=(s,d=2)=>{$('msg').textContent=s.replace(/CTRL/g,'E');mt=d};
+function load(i){
+  mapI=i;M=MAPS[i];const k=M.k;if(world)scene.remove(world);world=new T.Group();scene.add(world);
+  Hf=(x,z)=>{const n=(Math.sin(x*.07)+Math.cos(z*.09)+Math.sin((x+z)*.13))*.5;
+    if(k==='river')return 2.4-5.5*Math.exp(-((z-12*Math.sin(x*.03))**2)/(2*M.rw*M.rw))+n*.5;
+    if(k==='est')return 2.4-5.8*Math.exp(-((z-18*Math.sin(x*.025))**2)/(2*M.rw*M.rw))+n*.4;
+    if(k==='lake')return 2.6-6*Math.exp(-(x*x+z*z)/5000)+n*.6;
+    if(k==='bay')return 2.4-6*Math.exp(-(x*x+(z-40)**2)/6050)+n*.5;
+    return Math.min(3.5,3-(z+10)*.09)+(z<0?n*.8:n*.1)};
+  sp=M.sp||{river:[0,-32],est:[0,-48],lake:[0,-95],bay:[0,-62],beach:[0,-5]}[k];P.x=sp[0];P.z=sp[1];yaw=0;pitch=0;boat=false;fs='idle';
+  const G=new T.PlaneGeometry(300,300,200,200);G.rotateX(-Math.PI/2);
+  const ps=G.attributes.position,col=new Float32Array(ps.count*3),c1=new T.Color(M.c1),c2=new T.Color(M.c2),c3=new T.Color(M.c3),tc=new T.Color();
+  for(let v=0;v<ps.count;v++){const h=Hf(ps.getX(v),ps.getZ(v));ps.setY(v,h+(h>.2?(Math.sin(ps.getX(v)*2.1)*Math.cos(ps.getZ(v)*1.7)+Math.sin((ps.getX(v)+ps.getZ(v))*3.3))*.05:0));tc.copy(h<.1?c3:h<.9?c1:c2).offsetHSL(0,0,(rnd()-.5)*.05);col.set([tc.r,tc.g,tc.b],v*3)}
+  G.setAttribute('color',new T.BufferAttribute(col,3));G.computeVertexNormals();
+  {const tm=new T.Mesh(G,new T.MeshLambertMaterial({vertexColors:true}));tm.receiveShadow=true;world.add(tm)}farField();
+  const WG=new T.PlaneGeometry(300,300,36,36);WG.rotateX(-Math.PI/2);
+  water=new T.Mesh(WG,new T.MeshPhongMaterial({color:M.w,transparent:true,opacity:.66,shininess:150,specular:0xffffff,envMap:cuT.texture,reflectivity:.6,combine:T.MixOperation,flatShading:true}));world.add(water);{const fw=new T.Mesh(new T.PlaneGeometry(3000,3000).rotateX(-Math.PI/2),water.material);fw.position.y=-.06;world.add(fw)}
+  if(0){const N=M.trees,tr=new T.InstancedMesh(new T.CylinderGeometry(.2,.35,5,5),new T.MeshLambertMaterial({color:0x6b4a2b}),N),fo=new T.InstancedMesh(new T.IcosahedronGeometry(2.4,0),new T.MeshLambertMaterial({color:M.tc,flatShading:true}),N),m=new T.Matrix4();let n=0;
+    for(let a=0;n<N&&a<3000;a++){const x=(rnd()-.5)*280,z=(rnd()-.5)*280,h=Hf(x,z);if(h<1.3||Math.hypot(x-sp[0],z-sp[1])<14)continue;const s=.8+rnd()*.8;
+      m.makeScale(s,s,s).setPosition(x,h+2.5*s,z);tr.setMatrixAt(n,m);m.makeScale(s,s*.85,s).setPosition(x,h+5.3*s,z);fo.setMatrixAt(n,m);n++}
+    tr.count=fo.count=n;tr.castShadow=fo.castShadow=true;world.add(tr,fo)}
+  {const rk=new T.InstancedMesh(new T.DodecahedronGeometry(.7,0),new T.MeshLambertMaterial({color:0x7a766c,flatShading:true}),90),m=new T.Matrix4();let n=0;for(let a=0;n<90&&a<4000;a++){const x=(rnd()-.5)*280,z=(rnd()-.5)*280,h=Hf(x,z);if(h<-.5||h>.9)continue;const s=.4+rnd()*1.2;m.makeScale(s,s*.7,s).setPosition(x,h,z);rk.setMatrixAt(n++,m)}rk.count=n;rk.frustumCulled=false;rk.castShadow=true;world.add(rk)}
+  const sx=sp[0]+9,sz=sp[1],sh=Hf(sx,sz);shop={x:sx,z:sz};
+  const b=new T.Mesh(new T.BoxGeometry(6,3.6,5),new T.MeshLambertMaterial({color:0xd9c7a0}));b.position.set(sx,sh+1.8,sz);
+  const ro=new T.Mesh(new T.BoxGeometry(7,.4,6),new T.MeshLambertMaterial({color:0x2e6f4e}));ro.position.set(sx,sh+3.8,sz);
+  const sg=new T.Mesh(new T.BoxGeometry(.2,1.1,4),new T.MeshBasicMaterial({color:0xffd24a}));sg.position.set(sx-3.1,sh+2.5,sz);
+  buildShop();buildRamp();boatM.visible=false;bp=null;plant();
+}
+const per=h=>h<5||h>=20?3:h<8?0:h<17?1:2;
+const lerpC=(a,b,t)=>new T.Color(a).lerp(new T.Color(b),t);
+function sky(){
+  const s=Math.sin((hr-6)/12*Math.PI),day=Math.min(1,Math.max(0,s*4)),warm=Math.max(0,1-Math.abs(s)*4);
+  let c=lerpC(0x070d1f,0x8fd0f5,day);if(s>-.2)c.lerp(new T.Color(0xff9a6b),warm*.6);
+  c.lerp(new T.Color(0x667078),W.g*Math.max(day,.3));scene.fog.density=W.fd;scene.background=c;scene.fog.color.copy(c);hemi.intensity=(.25+.6*day)*(.6+.4*W.sun)+W.lf*2;sun.intensity=(Math.max(0,s)*1.1+.05)*W.sun;
+  {const dx=Math.cos((hr-6)/12*Math.PI)*100;sun.position.set(P.x+dx,Math.max(s,.05)*100,P.z+40);sun.target.position.set(P.x,0,P.z);sun.target.updateMatrixWorld();sun.color.set(warm>.3?0xffb070:0xfff2d0);skyM.position.copy(cam.position);skyM.material.uniforms.top.value.copy(lerpC(0x030612,0x2a6fc0,day));skyM.material.uniforms.hor.value.copy(c);disc.position.copy(cam.position).add(new T.Vector3(dx,s*100,40).normalize().multiplyScalar(420));disc.visible=s>-.05;disc.material.color.set(warm>.3?0xffa050:0xfff6d8);stars.position.copy(cam.position);stars.material.opacity=1-day;stars.visible=day<1;cloudM.color.copy(lerpC(0x1a2036,0xffffff,Math.max(day,.15)).lerp(new T.Color(0x4a4e56),W.g))}
+}
+function fmt(h){const H=Math.floor(h),m=Math.floor((h-H)*60);return String(H).padStart(2,'0')+':'+String(m).padStart(2,'0')}
+// input
+addEventListener('mousemove',e=>{if(!locked)return;yaw-=e.movementX*.0022;pitch=Math.max(-1.4,Math.min(1.4,pitch-e.movementY*.0022))});
+document.addEventListener('pointerlockchange',()=>{locked=document.pointerLockElement===$('gl')});
+$('gl').addEventListener('click',()=>{if(!over&&!locked)$('gl').requestPointerLock()});
+addEventListener('mousedown',e=>{if(!locked||e.button)return;
+  if(fs==='idle'){if(pend){say('Keep (K) or release (R) the fish first')}else if(rigd){fs='charge';charge=0}else say('Not rigged! Press CTRL to tie on your gear')}else if(fs!=='bite')reeling=true});
+addEventListener('mouseup',e=>{if(e.button)return;reeling=false;if(fs==='charge')cast()});
+addEventListener('keydown',e=>{if(e.code==='Escape')return;keys[e.code]=true;if(over&&e.code!=='KeyF'&&e.code!=='KeyE')return;
+  if(e.code==='KeyF'){if($('shop').hidden){if(Math.hypot(P.x-shop.x,P.z-shop.z)<4.5&&!over){if(!shopOpen())say('Shazza has knocked off for the night. Back at 6am',3);else{document.exitPointerLock();openShop()}}}else closeShop()}
+  if(e.code==='KeyP')save(1);if(e.code==='KeyT'){hr+=3;if(hr>=24){hr-=24;day=(day+1)%7}}if(e.code==='KeyE'){if(!$('rod').hidden)closeRod();else if(!over&&fs==='idle')openRod()}if(e.code==='KeyM'&&!over&&fs==='idle'){document.exitPointerLock();$('menu').hidden=false;over=true;rmaps()}if(e.code==='KeyK'||e.code==='KeyR')decide(e.code==='KeyK');
+  if(e.code==='KeyB')toggleBoat();
+  if(e.code.startsWith('Digit')&&+e.key>=1&&+e.key<=6&&fs==='idle'){if(sel!==+e.key-1)rigd=false;sel=+e.key-1;say(LURES[sel].n+' ('+LURES[sel].c+' left). Press CTRL to tie it on',2.5)}
+  if(e.code==='Space'&&fs==='snag'&&tens>.3&&rnd()<.2){fs='ret';tens=0;say('Freed the snag! 🙌')}if(e.code==='Space'&&fs==='bite'){fs='fight';say('HOOKED! 🎣',1.2)}});
+addEventListener('keyup',e=>keys[e.code]=false);
+function toggleBoat(){return tb2()}
+function toggleBoatOld(){
+  if(fs!=='idle')return;
+  if(boat){for(let r=2;r<45;r+=2)for(let a=0;a<16;a++){const x=P.x+Math.cos(a/16*6.283)*r,z=P.z+Math.sin(a/16*6.283)*r;if(Hf(x,z)>.9&&Math.abs(x)<139&&Math.abs(z)<139){P.x=x;P.z=z;boat=false;boatM.visible=false;say('Back on land');return}}say('No shore nearby');return}
+  if(!rented){say('Rent a boat at the tackle shop first');return}
+  for(let r=2;r<45;r+=2)for(let a=0;a<16;a++){const x=P.x+Math.cos(a/16*6.283)*r,z=P.z+Math.sin(a/16*6.283)*r;if(Hf(x,z)<-1.4){P.x=x;P.z=z;boat=true;boatM.visible=true;say('Boat launched. WASD to drive');return}}
+  say('No deep water close enough')}
+// shop
+function openShop(){$('shop').hidden=false;over=true;drawShop()}
+function closeShop(){$('shop').hidden=true;over=false}
+function drawShop(){
+  $('shm').textContent='Shazza: G’day mate, what can I do ya for? Cash $'+money;
+  $('shi').innerHTML='<h3>🐟 Sell</h3>'+sellUI()+'<h3>🛒 Buy</h3>'+LURES.map((l,i)=>l.pro?'':`<button onclick="buy(${i})">${l.n} ×3 (size ${l.s}): $${l.$} — you have ${l.c}</button>`).join('')+
+  `<button onclick="buy('line')">Stronger line, level ${lvl+1}/5: $${80*(lvl+1)}</button><h3>🚤 Rent</h3><button onclick="buy('boat')">${M.nb?'🚫 Boats are prohibited on this river':rented?'Boat rented ✔':'Rent a boat for this trip: $120'}</button>`}
+function buy(i){
+  const cost=i==='line'?80*(lvl+1):i==='boat'?120:LURES[i].$;
+  if(i==='line'&&lvl>=5)return;if(i==='boat'&&(rented||M.nb))return;
+  if(money<cost){$('shm').textContent='Not enough cash, mate. Go catch more fish.';return}
+  money-=cost;if(i==='line')lvl++;else if(i==='boat'){rented=true;spawnBoat()}else LURES[i].c+=3;drawShop()}
+// fishing
+function cast(){bh=1;if(LURES[sel].bait&&charge>.85&&rnd()<.3){bh=0;rigd=false;say('Your bait flew off mid-cast! Reel in, CTRL to re-bait',3)}
+  const d=new T.Vector3();cam.getWorldDirection(d);lure.position.copy(cam.position).addScaledVector(d,1.2);
+  lv.copy(d).multiplyScalar(8+charge*32);lv.y+=2;fs='fly';lure.visible=line.visible=true}
+function loseLure(m){if(!LURES[sel].bait)LURES[sel].c--;fs='snap';snT=.3;drop=.8;shake=.4;reeling=false;rmFish();rigd=false;snapped=true;say(m+' Re-rigging costs $10. Press E.',4)}
+function tryBite(){const bb=LURES[sel].bait,a=M.fish.map(id=>FISH[id].p[per(hr)]*Math.max(.1,1-Math.abs(LURES[sel].s-FISH[id].s)*(bb?.1:.35))),w=a.map((x,i)=>{const id=M.fish[i];return x*[0,1,.3,.05][FISH[id].s]*(id==='carp'&&blitz()?3:1)*(SHK[id]&&M.k==='beach'?10:1)*BF(id)}),tot=w.reduce((x,y)=>x+y,0),avg=a.reduce((x,y)=>x+y,0)/a.length;const ch=.025*avg*quiet*(reeling?1.4:1)*(bb?1.5:LURES[sel].pro?1.9:1)*(M.k==='beach'&&per(hr)===3?.45:1)*LINES[rig.line].vis*(blitz()?2.5:1)*W.bite;if(rnd()>ch){if(rnd()<ch*6)tap=.45;return}let r=rnd()*tot,i=0;while(r>w[i]){r-=w[i];i++}fid=M.fish[i];fish=FISH[fid];if(bb&&fish.s===1&&rnd()<.5){bh=0;rigd=false;drop=.6;tap=.9;splash(lure.position.x,lure.position.z,6,.5);say('Nibbles... your bait is gone. Reel in, then press CTRL to re-bait',3.5);return}wt=fish.w[0]+(fish.w[1]-fish.w[0])*rnd()**4.5;str=fish.st*(.6+.4*wt/fish.w[1])/(1+lvl*.18);stam=1;tens=.4;surge=false;surgeT=1;slack=0;dist=Math.hypot(lure.position.x-P.x,lure.position.z-P.z);ldir.set(lure.position.x-P.x,0,lure.position.z-P.z).normalize();fs='bite';bt=1.4;drop=1;shake=.6;splash(lure.position.x,lure.position.z,20,1);rmFish();fM=makeFish(fid);fM.scale.setScalar(.5+.7*Math.sqrt(wt/fish.w[1]));fM.position.set(lure.position.x,-.35,lure.position.z);fM.rotation.y=Math.atan2(-ldir.z,ldir.x);scene.add(fM);say('BITE! Hit SPACE to strike!',1.4)}
+function tryBiteOld(){
+  const w=M.fish.map(id=>FISH[id].p[per(hr)]*Math.max(.1,1-Math.abs(LURES[sel].s-FISH[id].s)*.35)),tot=w.reduce((a,b)=>a+b,0);
+  if(rnd()>.2*(tot/w.length)*quiet*(reeling?1.4:1))return;
+  let r=rnd()*tot,i=0;while(r>w[i]){r-=w[i];i++}
+  fish=FISH[M.fish[i]];wt=fish.w[0]+(fish.w[1]-fish.w[0])*rnd()**2.2;str=fish.st*(.6+.4*wt/fish.w[1])/(1+lvl*.18);
+  stam=1;tens=.4;surge=false;surgeT=1;slack=0;dist=Math.hypot(lure.position.x-P.x,lure.position.z-P.z);
+  ldir.set(lure.position.x-P.x,0,lure.position.z-P.z).normalize();fs='fight';shake=.5;say('FISH ON! 🎣',1.5)}
+function fishing(dt){
+  const lp=lure.position;
+  if(fs==='charge'){charge=Math.min(1,charge+dt/1.2);rod.rotation.x=-1.1+charge*.5;return}
+  drop=Math.max(0,drop-dt*1.3);rod.rotation.x=-1.1+(fs==='fight'?tens*.3:0)+drop*.3;if(fs==='snap'){snT-=dt;const k=Math.min(1,dt*14);lp.x+=(P.x-lp.x)*k;lp.z+=(P.z-lp.z)*k;lp.y+=(cam.position.y-.4-lp.y)*k;if(snT<=0){fs='idle';lure.visible=line.visible=false}return}if(fs==='bite'){bt-=dt;if(bt<=0){fs='ret';rmFish();if(LURES[sel].bait){rigd=false;bh=0}say('It spat the lure. Too slow!',2)}}
+  if(fs==='fly'){lv.y-=14*dt;lp.addScaledVector(lv,dt);const h=Hf(lp.x,lp.z);
+    if(lp.y<=Math.max(h,0)||Math.abs(lp.x)>145||Math.abs(lp.z)>145){
+      if(h<-.15){lp.y=-.1;depth=-h;fs='ret';ba=0;splash(lp.x,lp.z,10,.6);say('Splash. Hold LMB to retrieve',2)}else{lp.y=Math.max(h,0)+.1;depth=0;fs='ret';say('Landed on dry ground. Reel it in',2)}}}
+  else if(fs==='ret'){
+    const dx=P.x-lp.x,dz=P.z-lp.z,d=Math.hypot(dx,dz);
+    if(reeling){lp.x+=dx/d*5*dt;lp.z+=dz/d*5*dt;const h=Hf(lp.x,lp.z);lp.y=h<-.15?-.1:Math.max(h,0)+.1;depth=Math.max(0,-h)}
+    if(d<2.2){fs='idle';lure.visible=line.visible=false;reeling=false;return}
+    if(depth>0){ba+=dt;if(ba>.6&&bh>0){ba=0;if(LURES[sel].bait&&rnd()<.025){bh=0;rigd=false;say('Bait slid off the hook. Reel in, CTRL to re-bait',3.5)}else tryBite()}
+      if(reeling&&rnd()<dt*(M.k==='river'||M.k==='est'?.07:.04)){fs='snag';tens=0;say('SNAGGED! Hold LMB and mash SPACE to jerk it free',3)}}}
+  else if(fs==='snag'){tens+=(reeling?.4:-.5)*dt;tens=Math.max(0,tens);if(tens>1)loseLure('Line snapped on the snag. Lure lost 😬')}
+  else if(fs==='fight'){
+    surgeT-=dt;if(surgeT<=0){surge=rnd()<.35;surgeT=.8+rnd()*1.5}
+    const pull=str/LINES[rig.line].str*(.35+.65*stam)*(surge?1.8:1);
+    tens+=((reeling?.35:-.7)+pull*.45*(.6+.8*rig.drag))*dt;tens=Math.max(0,tens);
+    if(tens>1){loseLure('SNAP! The line broke and you lost the lure + fish 💔');return}
+    slack=tens<.08?slack+dt:0;if(slack>HOOKS[rig.hook].hold){fs='snap';snT=.3;reeling=false;rmFish();if(LURES[sel].bait)rigd=false;say('Slack line. It spat the hook 🫠',2.5);return}
+    if(reeling&&tens>.3&&tens<.8)stam-=.1*dt/(1+wt/12);else stam+=.02*dt;stam=Math.min(1,Math.max(0,stam));
+    dist+=reeling?-4*(1-pull*.5)*dt:pull*(2-1.2*rig.drag)*dt;dist=Math.min(60,dist);
+    lp.x=P.x+ldir.x*dist;lp.z=P.z+ldir.z*dist;lp.y=-.1+Math.sin(performance.now()/60)*.05;if(fM){fM.position.set(lp.x,-.3,lp.z);fM.rotation.y=Math.atan2(-ldir.z,ldir.x)}
+    if(surge)shake=Math.max(shake,.15);
+    if(dist<2){const len=lenOf(fid,wt),v=0;pend={id:fid,wt,len};fs='idle';reeling=false;lure.visible=line.visible=false;rmFish();if(held)cam.remove(held);held=makeFish(fid);held.position.set(0,-.12,-1.45);held.scale.setScalar(.55+.6*Math.sqrt(wt/fish.w[1]));cam.add(held);heldT=999;
+      const hist=[`${fish.n} ${wt.toFixed(1)}kg ${len}cm`].concat(($('lg').dataset.l||'').split('|').filter(Boolean)).slice(0,5);$('lg').dataset.l=hist.join('|');$('lg').innerHTML=hist.join('<br>');
+      say(`${fish.n}: ${len}cm, ${wt.toFixed(1)}kg. ${legalTxt(fid,len)}`,7)}}
+  
+}
+// loop
+let last=performance.now();
+function frame(now){
+  const dt=Math.min(.05,(now-last)/1000);last=now;requestAnimationFrame(frame);if(!M)return;
+  if(!over){
+    wxT-=dt;if(wxT<=0){wxT=70+rnd()*110;wx=pickWx();say('Weather: '+wx,3)}if(wx==='storm'&&rnd()<dt*.2)W.lf=1;{const nh=hr+dt/30;if(nh>=24){day=(day+1)%7;say('New day: '+DAYS[day],3)}hr=nh%24}qt-=dt;if(qt<=0){quiet=quiet>.5?.05:1;qt=quiet>.5?35+rnd()*40:50+rnd()*70}ot-=dt;if(ot<=0){ot=70+rnd()*90;if(bag.length&&rnd()<.7){const[f,n]=inspect();if(n){money-=f;say(`🚔 Fisheries officer! ${n} illegal fish seized. FINED $${f}`,5)}else say('🚔 Officer checked your esky. All legal, nice one!',3)}}
+    const f=(keys.KeyW?1:0)-(keys.KeyS?1:0),s=(keys.KeyD?1:0)-(keys.KeyA?1:0);
+    if((f||s)&&fs!=='fight'&&fs!=='snag'&&fs!=='charge'){const v=boat?9:keys.ShiftLeft?8:4.5,nx=P.x+(-Math.sin(yaw)*f+Math.cos(yaw)*s)*v*dt,nz=P.z+(-Math.cos(yaw)*f-Math.sin(yaw)*s)*v*dt,h=Hf(nx,nz);
+      if(Math.abs(nx)<140&&Math.abs(nz)<140&&(boat?h<-.9:h>-.6&&!blocked(nx,nz))){P.x=nx;P.z=nz;stp+=v*dt;if(stp>=1){stp=0;if(!boat&&rnd()<.001)dropLure()}}}
+    if(rigT>0){rigT-=dt;if(rigT<=0){const l=LURES[sel];if(l.bait)l.c--;rigd=true;say('Rigged up and ready to cast ✔',2)}}fishing(dt);gl.forEach((o,i)=>{o.m.rotation.y+=dt*2;o.m.position.y=o.y+.35+Math.sin(performance.now()/300)*.06;if(Math.hypot(P.x-o.m.position.x,P.z-o.m.position.z)<1.6){scene.remove(o.m);gl.splice(i,1);const pr=LURES.filter(l=>l.pro),l=pr[Math.floor(rnd()*pr.length)];l.c++;say('🏆 Found a '+l.n+'! Lucky as!',5)}});mt-=dt;if(mt<=0)$('msg').textContent='';
+  }
+  const eye=(boat?0:Math.max(gh(P.x,P.z),-.5))+1.7;cam.position.set(P.x,eye,P.z);
+  shake=Math.max(0,shake-dt);cam.rotation.set(pitch+(rnd()-.5)*shake*.06,yaw+(rnd()-.5)*shake*.06,0);
+  if(boat){boatM.position.set(P.x+Math.sin(yaw)*0,.1,P.z);boatM.rotation.y=yaw;boatM.position.x-=Math.sin(yaw)*1.8*0}
+  cam.updateMatrixWorld(true);bendRod(now,dt);rod.updateMatrixWorld(true);if(line.visible)updLine();if(npc){npc.visible=shopOpen();npc.rotation.y=Math.atan2(P.x-npc.position.x,P.z-npc.position.z);const dd=Math.hypot(P.x-npc.position.x,P.z-npc.position.z);npc.userData.arm.rotation.z=dd<7?2.4+Math.sin(now/180)*.35:.1}wxu(dt);rainUp(dt);svF-=dt;if((svT-=dt)<=0){svT=15;save()}gU.value=now/1000;if((envT-=dt)<=0){envT=2;cubeCam.position.copy(cam.position);cubeCam.update(R,scene)}updSplash(dt);lure.visible=line.visible&&lure.position.y>.05;if(fM)fM.userData.tail.rotation.y=Math.sin(now/70)*.5;if(held){heldT-=dt;held.rotation.y=.5+Math.sin(now/500)*.4;held.userData.tail.rotation.y=Math.sin(now/90)*.25;if(heldT<=0){cam.remove(held);held=null}}
+  const t=now/1000,pp=water.geometry.attributes.position;
+  for(let i=0;i<pp.count;i++)pp.setY(i,(Math.sin(pp.getX(i)*.15+t*1.5)*.08+Math.cos(pp.getZ(i)*.2+t*1.2)*.06)*(1+W.wave*2.5));
+  pp.needsUpdate=true;water.geometry.computeVertexNormals();sky();
+  $('top').innerHTML=`<b>${M.n}</b><br>🕒 ${DAYS[day]} ${fmt(hr)} ${WI[wx]}${blitz()?' · 🔥 CARP BLITZ':''}  ·  💰 $${money}<br>Lure: ${LURES[sel].n} ×${LURES[sel].c}  ·  ${HOOKS[rig.hook].n} · ${LINES[rig.line].n} · Line Lv ${lvl+1}${boat?'  ·  🚤 boat':''}  ·  Esky ${bag.length}${svF>0?' · 💾 saved':''}`;
+  const fi=fs==='fight'||fs==='snag';$('bars').style.display=fi?'block':'none';
+  if(fi){$('tn').style.width=Math.min(100,tens*100)+'%';$('tn').style.background=tens>.8?'#f44':tens>.3?'#5d5':'#fc4';$('sm').style.width=(fs==='fight'?stam*100:0)+'%'}
+  const near=Math.hypot(P.x-shop.x,P.z-shop.z)<4.5;
+  $('hint').textContent=over?'':pend?'K = keep it · R = release it':rigT>0?'Tying on...':!rigd&&fs==='idle'?'Not rigged! Press E to edit your rod and re-rig':near&&fs==='idle'?shopOpen()?'F: talk to Shazza (buy / sell / rent)':'Tackle shop closed (6am to 8pm)':fs==='idle'?'Hold LMB to charge a cast':fs==='fight'?'Reel (LMB) in bursts. Keep the bar green, let go when it goes red':fs==='charge'?'Release to cast':fs==='bite'?'PRESS SPACE TO STRIKE!':'';
+  R.render(scene,cam);
+}
+// menu
+function rmaps(){$('maps').innerHTML=MAPS.map((m,i)=>`<button onclick="start(${i})"><b>${ul[i]?'':'🔒 '}${m.n}${ul[i]?'':' · $'+m.u}</b><br><small>${m.d}</small></button>`).join('')}loadSave();rmaps();
+function start(i){if(!ul[i]){if(money>=MAPS[i].u){money-=MAPS[i].u;ul[i]=1;rmaps()}else{$('mnote').textContent='You need $'+MAPS[i].u+' to unlock '+MAPS[i].n;return}}$('mnote').textContent='';wx=pickWx();gl.forEach(o=>scene.remove(o.m));gl=[];load(i);$('menu').hidden=true;over=false;rented=false;$('gl').requestPointerLock();say(DAYS[day]+' at '+MAPS[i].n+(blitz()?' · 🔥 CARP BLITZ! Carp pay 3×':''),4)}
+document.addEventListener('pointerlockchange',()=>{if(!document.pointerLockElement&&!over&&$('shop').hidden)$('hint').textContent='Click to resume'});
+requestAnimationFrame(frame);
+</script></body></html>
